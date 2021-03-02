@@ -1,0 +1,210 @@
+---
+title: Pollution at Sydney beaches
+runtime: shiny
+output: html_document
+---
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library("leaflet")
+library("tidyverse")
+library("janitor")
+library("lubridate")
+library("forecast")
+library("ggpubr")
+library("zoo")
+library("imputeTS")
+library("viridis")
+library("shinyWidgets")
+plot_stl <- function(data,freq){
+  zoo(data$month_ave, data$month)%>%
+    na_interpolation(option = "linear")%>%
+    ts(start=c(year(min(data$month)),month(min(data$month))),frequency=freq)%>%
+    mstl()%>%
+    autoplot() + 
+    theme(text = element_text(size=6))
+} 
+get_mean <- function(data){
+  mean(data$month_ave,na.rm=TRUE)
+}
+map2color<-function(x,pal,limits=NULL){
+    if(is.null(limits)) limits=range(x)
+    pal[findInterval(x,seq(limits[1],limits[2],length.out=length(pal)+1), all.inside=TRUE)]
+}
+#######################3
+
+
+mydf <- read_csv("sydneybeaches.csv")%>%
+    clean_names()%>%
+    mutate(date=dmy(date),
+           logbugs=log(1+enterococci_cfu_100ml))
+
+worst <- filter(mydf,enterococci_cfu_100ml==max(enterococci_cfu_100ml,na.rm=TRUE))%>%select(site,enterococci_cfu_100ml,date)
+
+zeros <- filter(mydf,enterococci_cfu_100ml==0)%>%
+  count()%>%
+  pull()
+
+range_dates <- range(mydf$date)
+
+weather <- read_csv("sydneyweather.csv")%>%
+  clean_names()%>%
+  mutate(date=ymd(paste(year,month,day,sep="-")))
+
+weather_monthly <- weather%>%
+  group_by(month=floor_date(date, "month"))%>%
+  summarise(month_ave=mean(rainfall_amount_millimetres,na.rm=TRUE))
+site_month <- mydf%>%
+  group_by(site, latitude, longitude, month=floor_date(date, "month")) %>%
+  summarize(month_ave=mean(logbugs))%>%
+  group_by(site,latitude,longitude,.add=FALSE)
+```
+
+
+
+## Location and pollution
+
+Sydney beaches suffer from vastly differing levels of pollution: `r dim(mydf)[1]` tests were performed over `r range_dates[1]` to `r range_dates[2]` resulted in `r zeros`  readings of 0 enterococci per 100ml whereas on `r worst$date` at `r worst$site` there was `r worst$enterococci_cfu_100ml` per 100ml.  Because the level of pollution varied over several orders of magnitude the following analysis uses the following transformation: `logbugs=log(1+enterococci_cfu_100ml)`. In addition to the log transformation test results at each site are averaged within each month. In the map below the size of the circles is proportional to the absolute level of pollution and colour is related to the relative level of pollution in a given month: big yellow circles bad. Regarding geography it is difficult to draw conclusions: Malabar beach is sheltered and polluted, but Clovelly is also sheltered. Maroubra is exposed and clean, but Coogee is also exposed. 
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+for_map <- mydf%>%
+    group_by(site, latitude, longitude, month=floor_date(date, "month")) %>%
+    summarize(month_ave=mean(logbugs))%>%
+    mutate(prd=(interval(min(month),month) %/% months(1))+1)%>%
+    na.omit()
+
+ui <- fluidPage(
+    sliderInput(inputId = "slider", 
+                label = "Select a month:",
+                min = min(for_map$month,na.rm=TRUE),
+                max = max(for_map$month,na.rm=TRUE),
+                value = floor_date(median(for_map$month,na.rm=TRUE),"month"),
+                step=1,
+                timeFormat="%Y-%b"),
+    leafletOutput("my_leaf")
+)
+
+server <- function(input, output, session){
+    df <- for_map
+    output$my_leaf <- renderLeaflet({
+        leaflet() %>%
+            addProviderTiles(providers$Esri.WorldImagery) %>%
+            setView(lat = -33.96, lng = 151.25, zoom = 11)
+    })
+    df_filtered <- reactive({
+      filter(df, month==floor_date(input$slider,"month"))
+    })
+    ## respond to the filtered data
+    observe({
+            leafletProxy(mapId = "my_leaf", data = df_filtered()) %>%
+            clearMarkers() %>%   ## clear previous markers
+            addCircleMarkers(lng = ~longitude,
+                             lat = ~latitude,
+                             radius = ~month_ave * 4,
+                             weight = 1,
+                             opacity = 1,
+                             color="transparent",
+                             fillColor = ~map2color(month_ave, viridis(length(month_ave))),
+                             fillOpacity = 0.5,
+                             label = ~lapply(site, htmltools::HTML))
+    })
+}
+shinyApp(ui, server)
+```
+
+## Temporal patterns in pollution
+
+The map above makes it apparent that pollution levels vary across time. Below we decompose each site's time series into a seasonal component, a trend and a residual. For the data aggregated to the monthly level, a total of `r sum(is.na(site_month$month_ave))` observations were explicitly missing and `r site_month%>%group_by(month)%>%count()%>%mutate(missing=11-n)%>%ungroup()%>%summarize(total_missing=sum(missing))%>%pull()` observations were implicitly missing.  All missing observations were replaced via linear interpolation.  
+
+
+```{r, echo=FALSE,message=FALSE}
+
+month <- mydf%>%
+  group_by(month=floor_date(date, "month")) %>%
+  summarize(month_ave=mean(logbugs))
+all_sites <- plot_stl(month,12)
+all_df=tibble(site="All sites",plots=list(all_sites))
+both <- inner_join(month,weather_monthly, by="month")
+site_month <-site_month %>%
+  nest()%>%
+  mutate(plots=map(data,plot_stl,12),
+         ave=map_dbl(data,get_mean))%>%
+  arrange(ave)
+
+selected_columns <- site_month%>%
+  select(site,latitude,longitude,data,plots)
+for_plot <- bind_rows(all_df, selected_columns)
+         
+ggarrange(plotlist=for_plot$plots,labels=for_plot$site, font.label = list(size = 6))
+```
+
+## Temporal pattern of Rainfall
+
+The trend and seasonal components of the test results suggest that weather might have an impact on bacteria levels. The correlation between the average rainfall and the average log bacteria count (by month) is `r  round(cor.test(both$month_ave.x,both$month_ave.y)$estimate,2)`. Below the monthly average rainfall is decomposed into a seasonal component, trend and residual.  
+```{r, echo=FALSE,message=FALSE }
+
+weather_monthly%>%
+  filter(month>ymd("2013-01-01")& month<ymd("2019-01-01"))%>%
+  plot_stl(12)
+
+```
+
+## Bacteria count vs. sum of rain over previous x days. 
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+ui <- fluidPage(
+    sidebarLayout(
+        sidebarPanel(
+            sliderInput("x",
+                        "choose x:",
+                        min = 1,
+                        max = 14,
+                        value = 7)
+        ),
+
+        
+        mainPanel(
+           plotOutput("theplot")
+        )
+    )
+)
+
+# Define server logic required to draw a histogram
+server <- function(input, output) {
+
+    output$theplot <- renderPlot({
+        
+        weather <- weather%>%
+            mutate(rolling_rain =rollapplyr(rainfall_amount_millimetres, input$x, sum, partial = TRUE),
+                   log_roll_rain= log(1+rolling_rain))
+        with_weather <- inner_join(mydf,weather)%>%
+            select(site,date,log_roll_rain,logbugs)
+        
+        all_sites <- with_weather%>%
+            group_by(date,log_roll_rain)%>%
+            summarize(logbugs=mean(logbugs,na.rm=TRUE))%>%
+            mutate(site="All sites")
+        
+        with_weather <- bind_rows(all_sites,with_weather)
+        
+        ggplot(with_weather,aes(x=log_roll_rain,y=logbugs))+
+            geom_jitter(alpha=.1)+
+            geom_smooth()+
+          xlim(0,6)+
+            facet_wrap(vars(site))+
+          labs(x=paste0("log of sum of rainfall over last ",input$x," days"),
+               y="log of enterococci_cfu_100ml")
+      
+    })
+}
+
+# Run the application 
+shinyApp(ui = ui, server = server)
+
+
+
+```
+
+
