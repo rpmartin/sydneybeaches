@@ -38,6 +38,13 @@ mydf <- read_csv("sydneybeaches.csv")%>%
     mutate(date=dmy(date),
            logbugs=log(1+enterococci_cfu_100ml))
 
+for_ordering <- mydf%>%
+  group_by(site)%>%
+  summarize(dirty=mean(logbugs,na.rm=TRUE))%>%
+  arrange(dirty)%>%
+  select(site)%>%
+  pull()
+
 worst <- filter(mydf,enterococci_cfu_100ml==max(enterococci_cfu_100ml,na.rm=TRUE))%>%select(site,enterococci_cfu_100ml,date)
 
 zeros <- filter(mydf,enterococci_cfu_100ml==0)%>%
@@ -134,7 +141,6 @@ site_month <-site_month %>%
 selected_columns <- site_month%>%
   select(site,latitude,longitude,data,plots)
 for_plot <- bind_rows(all_df, selected_columns)
-         
 ggarrange(plotlist=for_plot$plots,labels=for_plot$site, font.label = list(size = 6))
 ```
 
@@ -187,13 +193,16 @@ server <- function(input, output) {
             summarize(logbugs=mean(logbugs,na.rm=TRUE))%>%
             mutate(site="All sites")
         
-        with_weather <- bind_rows(all_sites,with_weather)
+        with_weather <- bind_rows(all_sites,with_weather)%>%
+          mutate(site=factor(site,
+                             levels=c("All sites", for_ordering),
+                             ordered = TRUE))
         
-        ggplot(with_weather,aes(x=log_roll_rain,y=logbugs))+
+         ggplot(with_weather,aes(x=log_roll_rain,y=logbugs))+
             geom_jitter(alpha=.1)+
             geom_smooth()+
           xlim(0,6)+
-            facet_wrap(vars(site))+
+            facet_wrap(~site)+
           labs(x=paste0("log of sum of rainfall over last ",input$x," days"),
                y="log of enterococci_cfu_100ml")
       
