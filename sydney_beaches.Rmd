@@ -14,7 +14,6 @@ library("ggpubr")
 library("zoo")
 library("imputeTS")
 library("viridis")
-library("shinyWidgets")
 plot_stl <- function(data,freq){
   zoo(data$month_ave, data$month)%>%
     na_interpolation(option = "linear")%>%
@@ -121,7 +120,7 @@ shinyApp(ui, server)
 
 ## Temporal patterns in pollution
 
-The map above makes it apparent that pollution levels vary across time. Below we decompose each site's time series into a seasonal component, a trend and a residual. For the data aggregated to the monthly level, a total of `r sum(is.na(site_month$month_ave))` observations were explicitly missing and `r site_month%>%group_by(month)%>%count()%>%mutate(missing=11-n)%>%ungroup()%>%summarize(total_missing=sum(missing))%>%pull()` observations were implicitly missing.  All missing observations were replaced via linear interpolation.  
+The map above makes it apparent that pollution levels vary across time. Below we decompose each site's time series into a seasonal component, a trend and a residual. For the data aggregated to the monthly level, a total of `r sum(is.na(site_month$month_ave))` observations were explicitly missing and `r site_month%>%group_by(month)%>%count()%>%mutate(missing=11-n)%>%ungroup()%>%summarize(total_missing=sum(missing))%>%pull()` observations were implicitly missing.  All missing observations were replaced via linear interpolation. Sites are ordered from cleanest to dirtiest.   
 
 
 ```{r, echo=FALSE,message=FALSE}
@@ -157,6 +156,7 @@ weather_monthly%>%
 
 ## Bacteria count vs. sum of rain over previous x days. 
 
+It is not clear (to me) how long of a delay there is between rainfall and a spike in bacteria levels.  Using the slider bar you can choose the number of days preceding a bacteria reading over which to aggregate rainfall. Sites are ordered from cleanest to dirtiest. 
 
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
 
@@ -199,7 +199,7 @@ server <- function(input, output) {
                              ordered = TRUE))
         
          ggplot(with_weather,aes(x=log_roll_rain,y=logbugs))+
-            geom_jitter(alpha=.1)+
+            geom_jitter(alpha=.05)+
             geom_smooth()+
           xlim(0,6)+
             facet_wrap(~site)+
